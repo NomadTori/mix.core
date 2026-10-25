@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>E-Liquid // MIX.CORE</title>
+<meta name="description" content="Kalkulačka pro míchání e-liquidů z čistých složek VG a PG. Funguje offline.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mix.Core">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<!-- Písma (po prvním načtení je service worker uloží pro offline použití) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<!-- Tailwind je předkompilovaný do app.css (žádné CDN, funguje offline) -->
+<link rel="stylesheet" href="app.css">
+
+<style>
+  :root{
+    --pg:#22d3ee;  --pg-glow:rgba(34,211,238,.45);
+    --vg:#e040fb;  --vg-glow:rgba(224,64,251,.45);
+    --aro:#facc15; --aro-glow:rgba(250,204,21,.45);
+    --nic:#a3e635; --nic-glow:rgba(163,230,53,.45);
+    --err:#ff2a4d; --err-glow:rgba(255,42,77,.55);
+    --cyl-h:320px;
+    --sat:env(safe-area-inset-top,0px);
+    --sab:env(safe-area-inset-bottom,0px);
+    --sal:env(safe-area-inset-left,0px);
+    --sar:env(safe-area-inset-right,0px);
+  }
+  html,body{background:#000;}
+  html{-webkit-text-size-adjust:100%;text-size-adjust:100%;}
+  body{font-family:'Chakra Petch',system-ui,sans-serif;color:#e4e4e7;position:relative;-webkit-tap-highlight-color:transparent;}
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+
+  /* Pozadí: mřížka + scanlines */
+  body::before{
+    content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      linear-gradient(rgba(34,211,238,.035) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(224,64,251,.03) 1px,transparent 1px);
+    background-size:44px 44px;
+  }
+  body::after{
+    content:'';position:fixed;inset:0;pointer-events:none;z-index:60;opacity:.35;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,.35) 0 1px,transparent 1px 3px);
+  }
+
+  /* Obal s ohledem na výřezy displeje (notch, home indikátor) */
+  .wrap{
+    position:relative;z-index:1;
+    padding-top:calc(1.25rem + var(--sat));
+    padding-left:max(1rem,var(--sal));
+    padding-right:max(1rem,var(--sar));
+    padding-bottom:calc(7rem + var(--sab));   /* místo pro spodní lištu na mobilu */
+  }
+  @media (min-width:1024px){
+    .wrap{padding-top:calc(3rem + var(--sat));padding-bottom:3rem;}
+  }
+
+  /* Panely */
+  .panel{
+    position:relative;
+    background:linear-gradient(180deg,#0f0f14 0%,#07070a 100%);
+    border:1px solid var(--accent);
+    box-shadow:0 0 30px -8px var(--glow), inset 0 0 50px -28px var(--glow);
+  }
+  .panel::before,.panel::after{content:'';position:absolute;width:16px;height:16px;pointer-events:none;}
+  .panel::before{top:-2px;left:-2px;border-top:3px solid var(--accent);border-left:3px solid var(--accent);}
+  .panel::after{bottom:-2px;right:-2px;border-bottom:3px solid var(--accent);border-right:3px solid var(--accent);}
+  .panel-head{border-bottom:1px solid var(--glow);}
+  .panel-tag{color:var(--accent);text-shadow:0 0 10px var(--glow);}
+  .panel-bar{background:var(--accent);box-shadow:0 0 10px var(--accent);}
+
+  .lbl{display:block;font-size:.72rem;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#8b8b98;margin-bottom:.5rem;}
+
+  /* Inputy (font-size >= 16 px, aby iOS při ťuknutí nezoomoval) */
+  .field{
+    width:100%;background:#040406;border:1px solid #2a2a33;border-radius:0;color:#fff;
+    font-family:'JetBrains Mono',monospace;font-size:1.35rem;font-weight:500;
+    padding:.8rem 4.25rem .8rem 1rem;min-height:56px;outline:none;transition:border-color .15s,box-shadow .15s;
+    -webkit-appearance:none;appearance:none;
+  }
+  .field:focus{border-color:var(--accent);box-shadow:0 0 16px -2px var(--glow);}
+  .field.invalid{border-color:var(--err);box-shadow:0 0 14px -2px var(--err-glow);}
+  .unit{position:absolute;right:1rem;top:50%;transform:translateY(-50%);color:#6b6b78;font-family:'JetBrains Mono',monospace;font-size:.8rem;pointer-events:none;}
+
+  /* Chipy */
+  .chip{
+    position:relative;border:1px solid #24242c;background:#09090c;color:#5f5f6b;
+    padding:.8rem .5rem;min-height:66px;font-weight:700;font-size:1.05rem;letter-spacing:.06em;
+    text-transform:uppercase;line-height:1.1;cursor:pointer;transition:all .15s ease;
+    touch-action:manipulation;-webkit-user-select:none;user-select:none;
+  }
+  .chip .sub{display:block;margin-top:.3rem;font-size:.62rem;font-weight:500;letter-spacing:.16em;opacity:.75;}
+  @media (hover:hover){ .chip:hover{color:#c4c4cc;border-color:#3d3d48;} }
+  .chip:active{transform:scale(.97);}
+  .chip:focus-visible{outline:1px dashed var(--accent);outline-offset:2px;}
+  .chip.active{
+    color:var(--accent);border-color:var(--accent);background:var(--tint);
+    box-shadow:0 0 18px -2px var(--glow), inset 0 0 16px -4px var(--glow);
+    text-shadow:0 0 10px var(--glow);
+  }
+
+  .hint{border-left:2px solid var(--accent);background:var(--tint);box-shadow:-6px 0 14px -8px var(--glow);}
+
+  /* Výsledky */
+  .dot{width:10px;height:10px;display:inline-block;flex:none;}
+  .val{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:1.6rem;line-height:1;}
+  .step{font-family:'JetBrains Mono',monospace;font-size:.6rem;color:#52525b;letter-spacing:.1em;white-space:nowrap;}
+
+  /* Odměrný válec */
+  .cyl-lip{width:96px;height:8px;border:2px solid #52525b;border-bottom:none;margin-left:-6px;}
+  .cyl{
+    position:relative;width:84px;height:var(--cyl-h);border:2px solid #52525b;border-top:none;border-radius:0 0 12px 12px;
+    background:#030305;overflow:hidden;display:flex;flex-direction:column-reverse;
+    box-shadow:inset 0 0 20px rgba(255,255,255,.04);
+  }
+  .seg{width:100%;flex:none;transition:height .4s cubic-bezier(.2,.8,.2,1);position:relative;}
+  .seg::after{content:'';position:absolute;left:0;right:0;top:0;height:1px;background:rgba(255,255,255,.55);}
+  .seg-pg{background:linear-gradient(90deg,rgba(34,211,238,.55),rgba(34,211,238,.9),rgba(34,211,238,.55));box-shadow:0 0 18px var(--pg-glow);}
+  .seg-vg{background:linear-gradient(90deg,rgba(224,64,251,.55),rgba(224,64,251,.9),rgba(224,64,251,.55));box-shadow:0 0 18px var(--vg-glow);}
+  .seg-aro{background:linear-gradient(90deg,rgba(250,204,21,.55),rgba(250,204,21,.9),rgba(250,204,21,.55));box-shadow:0 0 18px var(--aro-glow);}
+  .seg-nic{background:linear-gradient(90deg,rgba(163,230,53,.55),rgba(163,230,53,.9),rgba(163,230,53,.55));box-shadow:0 0 18px var(--nic-glow);}
+  .tick{position:absolute;left:0;height:1px;background:rgba(255,255,255,.7);z-index:2;mix-blend-mode:difference;}
+  .tick-label{position:absolute;right:0;transform:translateY(50%);font-family:'JetBrains Mono',monospace;font-size:.65rem;color:#71717a;}
+
+  /* Chyba */
+  .fail{
+    position:relative;border:2px solid var(--err);
+    background:repeating-linear-gradient(-45deg,rgba(255,42,77,.08) 0 14px,transparent 14px 28px),#0b0003;
+    box-shadow:0 0 50px -6px var(--err-glow), inset 0 0 50px -14px var(--err-glow);
+  }
+  .fail-title{
+    color:var(--err);font-weight:700;letter-spacing:.06em;line-height:1.05;
+    font-size:clamp(1.8rem,8vw,2.6rem);text-shadow:0 0 14px var(--err-glow),0 0 2px #fff;
+    animation:flick 3s infinite;
+  }
+  @keyframes flick{0%,92%,100%{opacity:1}93%{opacity:.55}95%{opacity:1}96%{opacity:.7}}
+  .status-dot{width:8px;height:8px;border-radius:50%;}
+
+  /* Spodní lišta s výsledkem (jen mobil/tablet) */
+  .mbar{
+    position:fixed;left:0;right:0;bottom:0;z-index:50;
+    background:rgba(0,0,0,.9);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+    border-top:1px solid #3f3f46;box-shadow:0 -10px 30px -10px rgba(34,211,238,.25);
+    padding:.55rem max(.75rem,var(--sar)) calc(.55rem + var(--sab)) max(.75rem,var(--sal));
+    transition:transform .25s ease, border-color .2s;
+  }
+  .mbar.off{transform:translateY(110%);}
+  .mbar.err{border-top-color:var(--err);box-shadow:0 -10px 30px -10px var(--err-glow);}
+  .mcell{display:flex;flex-direction:column;align-items:center;min-width:0;}
+  .mcell .k{font-size:.58rem;font-weight:600;letter-spacing:.16em;text-transform:uppercase;}
+  .mcell .v{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:1.15rem;line-height:1.15;color:#fff;}
+  .mcell .v small{font-size:.65rem;color:#71717a;font-weight:500;margin-left:1px;}
+
+  .install-btn{
+    border:1px solid var(--pg);color:var(--pg);background:rgba(34,211,238,.08);
+    box-shadow:0 0 14px -4px var(--pg-glow);touch-action:manipulation;
+  }
+
+  /* Úzké telefony */
+  @media (max-width:420px){
+    :root{--cyl-h:280px;}
+    .chip{font-size:.9rem;padding:.7rem .2rem;min-height:60px;letter-spacing:.02em;}
+    .chip .sub{font-size:.55rem;letter-spacing:.08em;}
+    .val{font-size:1.4rem;}
+    .field{font-size:1.2rem;}
+  }
+  @media (max-width:360px){
+    .chip{font-size:.8rem;}
+    .cyl-lip{width:80px;margin-left:-5px;}
+    .cyl{width:70px;}
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none !important;transition:none !important;}
+  }
+</style>
+</head>
+<body class="min-h-screen antialiased">
+<div class="wrap max-w-6xl mx-auto">
+
+  <!-- HLAVIČKA -->
+  <header class="mb-6 sm:mb-10 flex flex-wrap items-end justify-between gap-3 sm:gap-4 border-b border-zinc-800 pb-5 sm:pb-6">
+    <div class="min-w-0">
+      <div class="mono text-[10px] sm:text-[11px] tracking-[0.3em] uppercase text-zinc-500 mb-2">// Lab Unit 07 — Liquid Synthesis</div>
+      <h1 class="text-[1.9rem] leading-tight sm:text-5xl font-bold tracking-wide uppercase">
+        <span style="color:var(--pg);text-shadow:0 0 18px var(--pg-glow)">E-Liquid</span>
+        <span class="text-zinc-600">//</span>
+        <span style="color:var(--vg);text-shadow:0 0 18px var(--vg-glow)">Mix.Core</span>
+      </h1>
+      <p class="text-sm text-zinc-400 mt-2 tracking-wide">Rozpad složek na čisté VG a PG. Výpočet běží v reálném čase.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="installBtn" type="button" class="install-btn hidden mono text-xs font-bold tracking-[0.2em] uppercase px-3 py-2 min-h-[40px]">↓ Instalovat</button>
+      <div id="status" class="mono text-xs tracking-[0.2em] uppercase flex items-center gap-2 border border-zinc-800 px-3 py-2 min-h-[40px]">
+        <span id="statusDot" class="status-dot" style="background:var(--nic);box-shadow:0 0 8px var(--nic)"></span>
+        <span id="statusText" style="color:var(--nic)">SYS ONLINE</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid lg:grid-cols-12 gap-6 lg:gap-7">
+
+    <!-- ========== VSTUPY ========== -->
+    <section class="lg:col-span-7 space-y-6 lg:space-y-7">
+
+      <!-- 01 CÍLOVÝ LIQUID -->
+      <div class="panel" style="--accent:var(--pg);--glow:var(--pg-glow);--tint:rgba(34,211,238,.07)">
+        <div class="panel-head flex items-center justify-between px-4 sm:px-5 py-3">
+          <div class="flex items-center gap-3">
+            <span class="panel-bar w-1.5 h-5"></span>
+            <h2 class="text-base sm:text-lg font-bold uppercase tracking-[0.12em]">Cílový liquid</h2>
+          </div>
+          <span class="panel-tag mono text-xs tracking-[0.25em]">MOD_01</span>
+        </div>
+        <div class="p-4 sm:p-5 space-y-6">
+          <div>
+            <label class="lbl" for="volume">Objem lahvičky</label>
+            <div class="relative"><input id="volume" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="60" class="field"><span class="unit">ml</span></div>
+          </div>
+          <div>
+            <span class="lbl">Cílový poměr VG / PG</span>
+            <!-- data-value = podíl VG v % -->
+            <div class="grid grid-cols-4 gap-2" data-group="ratio">
+              <button type="button" class="chip" data-value="30">30/70<span class="sub">Řídký</span></button>
+              <button type="button" class="chip" data-value="40">40/60<span class="sub">Chuť</span></button>
+              <button type="button" class="chip" data-value="50">50/50<span class="sub">MTL / Pod</span></button>
+              <button type="button" class="chip" data-value="60">60/40<span class="sub">Univerzál</span></button>
+              <button type="button" class="chip" data-value="70">70/30<span class="sub">DL / Mraky</span></button>
+              <button type="button" class="chip" data-value="80">80/20<span class="sub">Sub-ohm</span></button>
+              <button type="button" class="chip" data-value="100">100% VG<span class="sub">Bez PG</span></button>
+            </div>
+            <div class="hint mt-4 px-4 py-3">
+              <div id="ratioTitle" class="mono text-sm font-bold" style="color:var(--pg)"></div>
+              <div id="ratioHint" class="text-sm text-zinc-300 mt-1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 02 PŘÍCHUŤ -->
+      <div class="panel" style="--accent:var(--aro);--glow:var(--aro-glow);--tint:rgba(250,204,21,.07)">
+        <div class="panel-head flex items-center justify-between px-4 sm:px-5 py-3">
+          <div class="flex items-center gap-3">
+            <span class="panel-bar w-1.5 h-5"></span>
+            <h2 class="text-base sm:text-lg font-bold uppercase tracking-[0.12em]">Příchuť / Aroma</h2>
+          </div>
+          <span class="panel-tag mono text-xs tracking-[0.25em]">MOD_02</span>
+        </div>
+        <div class="p-4 sm:p-5 space-y-6">
+          <div>
+            <label class="lbl" for="aromaVol">Objem příchutě</label>
+            <div class="relative"><input id="aromaVol" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="6" class="field"><span class="unit">ml</span></div>
+            <p id="aromaPct" class="mono text-xs mt-2" style="color:var(--aro)"></p>
+          </div>
+          <div>
+            <span class="lbl">Poměr VG / PG v příchuti</span>
+            <!-- data-value = podíl VG v % -->
+            <div class="grid grid-cols-3 sm:grid-cols-5 gap-2" data-group="aroma">
+              <button type="button" class="chip" data-value="0">100% PG<span class="sub">Standard</span></button>
+              <button type="button" class="chip" data-value="30">30/70<span class="sub">Řídká</span></button>
+              <button type="button" class="chip" data-value="50">50/50<span class="sub">Střední</span></button>
+              <button type="button" class="chip" data-value="70">70/30<span class="sub">Hustší</span></button>
+              <button type="button" class="chip" data-value="100">100% VG<span class="sub">Bez PG</span></button>
+            </div>
+            <div class="hint mt-4 px-4 py-3">
+              <div id="aromaTitle" class="mono text-sm font-bold" style="color:var(--aro)"></div>
+              <div id="aromaHint" class="text-sm text-zinc-300 mt-1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 03 NIKOTIN -->
+      <div class="panel" style="--accent:var(--nic);--glow:var(--nic-glow);--tint:rgba(163,230,53,.07)">
+        <div class="panel-head flex items-center justify-between px-4 sm:px-5 py-3">
+          <div class="flex items-center gap-3">
+            <span class="panel-bar w-1.5 h-5"></span>
+            <h2 class="text-base sm:text-lg font-bold uppercase tracking-[0.12em]">Nikotinový booster</h2>
+          </div>
+          <span class="panel-tag mono text-xs tracking-[0.25em]">MOD_03</span>
+        </div>
+        <div class="p-4 sm:p-5 space-y-6">
+          <div class="grid grid-cols-2 gap-3 sm:gap-4">
+            <div>
+              <label class="lbl" for="nicTarget">Cílová síla</label>
+              <div class="relative"><input id="nicTarget" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="6" class="field"><span class="unit">mg</span></div>
+            </div>
+            <div>
+              <label class="lbl" for="nicBase">Síla boosteru</label>
+              <div class="relative"><input id="nicBase" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="20" class="field"><span class="unit">mg</span></div>
+            </div>
+          </div>
+          <p class="mono text-[11px] text-zinc-500 -mt-3">Síla v mg/ml.</p>
+          <div>
+            <span class="lbl">Poměr VG / PG v boosteru</span>
+            <!-- data-value = podíl VG v % -->
+            <div class="grid grid-cols-2 gap-2" data-group="nic">
+              <button type="button" class="chip" data-value="50">50/50<span class="sub">Univerzální</span></button>
+              <button type="button" class="chip" data-value="70">70/30<span class="sub">Hustší</span></button>
+            </div>
+            <div class="hint mt-4 px-4 py-3">
+              <div id="nicTitle" class="mono text-sm font-bold" style="color:var(--nic)"></div>
+              <div id="nicHint" class="text-sm text-zinc-300 mt-1"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== VÝSTUP ========== -->
+    <section id="output" class="lg:col-span-5 scroll-mt-4">
+      <div class="lg:sticky lg:top-6 space-y-6">
+
+        <!-- SYSTEM FAILURE -->
+        <div id="errorBox" class="fail hidden p-5 sm:p-6" role="alert">
+          <div class="mono text-[11px] tracking-[0.3em] uppercase mb-3" style="color:var(--err)">!! ERR_0x0F — Mix aborted</div>
+          <div class="fail-title uppercase">System Failure</div>
+          <div class="text-base sm:text-lg font-bold uppercase tracking-[0.1em] mt-1 text-white">Zákony fyziky porušeny</div>
+          <div class="h-px my-4" style="background:var(--err);box-shadow:0 0 10px var(--err)"></div>
+          <p id="errorText" class="text-base text-red-100 leading-relaxed"></p>
+          <p id="errorHint" class="mono text-xs text-zinc-300 mt-4 leading-relaxed border-l-2 pl-3" style="border-color:var(--err)"></p>
+        </div>
+
+        <!-- RECEPT -->
+        <div id="results" class="panel" style="--accent:#e4e4e7;--glow:rgba(228,228,231,.22);--tint:rgba(255,255,255,.04)">
+          <div class="panel-head flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 sm:px-5 py-3">
+            <div class="flex items-center gap-3">
+              <span class="panel-bar w-1.5 h-5"></span>
+              <h2 class="text-base sm:text-lg font-bold uppercase tracking-[0.12em]">Výstup / Recept</h2>
+            </div>
+            <span id="resSummary" class="mono text-[11px] text-zinc-400"></span>
+          </div>
+
+          <div class="p-4 sm:p-5">
+            <div class="flex gap-3 sm:gap-5">
+              <!-- Odměrný válec: flex-col-reverse => první div je na dně -->
+              <div class="flex gap-1.5 sm:gap-2 shrink-0">
+                <div id="scale" class="relative w-7 sm:w-8"></div>
+                <div>
+                  <div class="cyl-lip" id="cylLip"></div>
+                  <div class="cyl" id="cyl">
+                    <div class="seg seg-aro" id="segAro"></div>
+                    <div class="seg seg-nic" id="segNic"></div>
+                    <div class="seg seg-vg"  id="segVG"></div>
+                    <div class="seg seg-pg"  id="segPG"></div>
+                    <div id="ticks"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Seznam složek: flex-col-reverse => první položka je dole (pořadí lití odspodu) -->
+              <ul class="flex-1 flex flex-col-reverse justify-between min-w-0">
+                <li class="py-2">
+                  <div class="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-zinc-400"><span class="dot" style="background:var(--aro);box-shadow:0 0 8px var(--aro)"></span>Příchuť <span class="step ml-auto">#01 DNO</span></div>
+                  <div class="val mt-1" style="color:var(--aro);text-shadow:0 0 12px var(--aro-glow)"><span id="rAro">0</span> <span class="text-sm text-zinc-500">ml</span></div>
+                </li>
+                <li class="py-2 border-b border-zinc-800/80">
+                  <div class="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-zinc-400"><span class="dot" style="background:var(--nic);box-shadow:0 0 8px var(--nic)"></span>Booster <span class="step ml-auto">#02</span></div>
+                  <div class="val mt-1" style="color:var(--nic);text-shadow:0 0 12px var(--nic-glow)"><span id="rNic">0</span> <span class="text-sm text-zinc-500">ml</span></div>
+                  <div class="mono text-sm mt-1 text-zinc-300"><span id="rNicKs" class="font-bold" style="color:var(--nic)">0</span> ks <span class="text-zinc-600 text-xs">(1 ks = 10 ml)</span></div>
+                </li>
+                <li class="py-2 border-b border-zinc-800/80">
+                  <div class="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-zinc-400"><span class="dot" style="background:var(--vg);box-shadow:0 0 8px var(--vg)"></span>Čisté VG <span class="step ml-auto">#03</span></div>
+                  <div class="val mt-1" style="color:var(--vg);text-shadow:0 0 12px var(--vg-glow)"><span id="rVG">0</span> <span class="text-sm text-zinc-500">ml</span></div>
+                </li>
+                <li class="py-2 border-b border-zinc-800/80">
+                  <div class="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-zinc-400"><span class="dot" style="background:var(--pg);box-shadow:0 0 8px var(--pg)"></span>Čisté PG <span class="step ml-auto">#04 VRCH</span></div>
+                  <div class="val mt-1" style="color:var(--pg);text-shadow:0 0 12px var(--pg-glow)"><span id="rPG">0</span> <span class="text-sm text-zinc-500">ml</span></div>
+                </li>
+              </ul>
+            </div>
+
+            <!-- Rozpad VG/PG -->
+            <div class="mt-6">
+              <div class="mono text-[11px] tracking-[0.3em] uppercase text-zinc-500 mb-2">// Rozpad na VG / PG</div>
+              <table class="w-full text-sm mono">
+                <thead>
+                  <tr class="text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+                    <th class="text-left font-normal py-1.5">Složka</th>
+                    <th class="text-right font-normal py-1.5" style="color:var(--vg)">VG ml</th>
+                    <th class="text-right font-normal py-1.5" style="color:var(--pg)">PG ml</th>
+                  </tr>
+                </thead>
+                <tbody class="text-zinc-300">
+                  <tr class="border-t border-zinc-800/70"><td class="py-1.5 text-zinc-400">Příchuť</td><td class="text-right" id="bAroVG">0</td><td class="text-right" id="bAroPG">0</td></tr>
+                  <tr class="border-t border-zinc-800/70"><td class="py-1.5 text-zinc-400">Booster</td><td class="text-right" id="bNicVG">0</td><td class="text-right" id="bNicPG">0</td></tr>
+                  <tr class="border-t border-zinc-800/70"><td class="py-1.5 text-zinc-400">Dolití báze</td><td class="text-right" id="bFillVG">0</td><td class="text-right" id="bFillPG">0</td></tr>
+                  <tr class="border-t border-zinc-600 text-white font-bold"><td class="py-2">Celkem</td><td class="text-right" id="bTotVG">0</td><td class="text-right" id="bTotPG">0</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p id="checkLine" class="mono text-xs text-zinc-500 mt-4 leading-relaxed"></p>
+          </div>
+        </div>
+
+        <p class="text-xs text-zinc-600 leading-relaxed tracking-wide">
+          Při práci s nikotinovými boostery používej rukavice a skladuj je mimo dosah dětí a zvířat. Hodnoty v ml jsou zaokrouhleny na celá čísla.
+        </p>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- SPODNÍ LIŠTA S RECEPTEM (mobil) -->
+<button id="mbar" type="button" class="mbar lg:hidden w-full text-left" aria-label="Zobrazit recept">
+  <span id="mbarOk">
+    <span class="grid grid-cols-[1fr_1fr_1fr_1fr_auto] items-center gap-1">
+      <span class="mcell"><span class="k" style="color:var(--aro)">Aroma</span><span class="v"><span id="mAro">0</span><small>ml</small></span></span>
+      <span class="mcell"><span class="k" style="color:var(--nic)">Booster</span><span class="v"><span id="mNic">0</span><small>ml</small></span></span>
+      <span class="mcell"><span class="k" style="color:var(--vg)">VG</span><span class="v"><span id="mVG">0</span><small>ml</small></span></span>
+      <span class="mcell"><span class="k" style="color:var(--pg)">PG</span><span class="v"><span id="mPG">0</span><small>ml</small></span></span>
+      <span class="mono text-zinc-400 text-lg pl-2 pr-1" aria-hidden="true">↓</span>
+    </span>
+  </span>
+  <span id="mbarErr" class="hidden">
+    <span class="flex items-center justify-between gap-3 py-1">
+      <span class="font-bold uppercase tracking-[0.12em]" style="color:var(--err);text-shadow:0 0 10px var(--err-glow)">⚠ System failure</span>
+      <span class="mono text-xs text-zinc-300">Klepni pro detail ↓</span>
+    </span>
+  </span>
+</button>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const EPS = 1e-9;
+  const STORE_KEY = 'mixcore.v1';
+  const INPUTS = ['volume', 'aromaVol', 'nicTarget', 'nicBase'];
+
+  // Všechny hodnoty stavu = podíl VG v procentech
+  const state = { ratio: 50, aroma: 0, nic: 50 };
+
+  const hints = {
+    ratio: {
+      '30':  'Velmi řídký, výrazná chuť a silný zásah v krku. Pro starší MTL clearomizéry s malými knoty.',
+      '40':  'Řídký, silný přenos chuti. Pro MTL a malé pody.',
+      '50':  'Ideální pro MTL a pody. Univerzální poměr, dobře nasakuje i do malých knotů.',
+      '60':  'Vyvážený a jemnější na krk. Pro RDL a výkonnější pody.',
+      '70':  'Hustší, pro DL a velké mraky. Do malých podů může nasakovat pomalu.',
+      '80':  'Velmi hustý, pro sub-ohm DL a RDA/RTA s velkými knotovými otvory.',
+      '100': 'Maximální hustota, pro alergiky na PG. Příchuť musí být také 100% VG a liquid jen bez nikotinu – oba boostery obsahují PG.'
+    },
+    aroma: {
+      '0':   'Standardní koncentrát. Nejřidší, nejlépe nese chuť a do výsledku přidává jen PG.',
+      '30':  'Řídká příchuť s mírným podílem VG. Hustotu liquidu téměř neovlivní.',
+      '50':  'Středně hustá, vyvážená. Do liquidu přidává VG i PG rovným dílem.',
+      '70':  'Hustší příchuť s převahou VG. Vhodná do hustších DL liquidů.',
+      '100': 'Nejhustší, bez PG. Vhodná pro alergiky na PG, chuť bývá méně výrazná.'
+    },
+    nic: {
+      '50':  'Univerzální booster střední hustoty. Hodí se do většiny poměrů a nejméně posouvá výsledný poměr.',
+      '70':  'Hustší booster s převahou VG. Vhodný do hustších DL liquidů, méně dráždí krk a do výsledku přidává méně PG.'
+    }
+  };
+
+  function num(id) {
+    const raw = String($(id).value).trim().replace(/\s+/g, '').replace(',', '.');
+    if (raw === '') return NaN;
+    if (!/^\d*\.?\d+$|^\d+\.$/.test(raw)) return NaN;   // jen nezáporná čísla
+    return Number(raw);
+  }
+  const r = v => Math.round(v);
+  const fmt1 = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
+  const label = vg => vg === 100 ? '100% VG' : vg === 0 ? '100% PG' : `${vg}VG / ${100 - vg}PG`;
+  const labelShort = vg => vg === 100 ? '100% VG' : vg === 0 ? '100% PG' : `${vg}VG/${100 - vg}PG`;
+
+  // ---------- Uložení posledních hodnot (per zařízení) ----------
+  function save() {
+    try {
+      const data = { ...state };
+      INPUTS.forEach(id => data[id] = $(id).value);
+      localStorage.setItem(STORE_KEY, JSON.stringify(data));
+    } catch (e) { /* úložiště nedostupné – nevadí */ }
+  }
+  function load() {
+    try {
+      const data = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (!data) return;
+      INPUTS.forEach(id => { if (typeof data[id] === 'string') $(id).value = data[id]; });
+      Object.keys(state).forEach(key => {
+        const exists = document.querySelector(`[data-group="${key}"] .chip[data-value="${data[key]}"]`);
+        if (exists) state[key] = Number(data[key]);
+      });
+    } catch (e) { /* poškozená data – použij výchozí */ }
+  }
+
+  // ---------- UI stavy ----------
+  function setStatus(ok) {
+    const c = ok ? 'var(--nic)' : 'var(--err)';
+    $('statusDot').style.background = c;
+    $('statusDot').style.boxShadow = `0 0 8px ${c}`;
+    $('statusText').style.color = c;
+    $('statusText').textContent = ok ? 'SYS ONLINE' : 'SYS FAILURE';
+    $('status').style.borderColor = ok ? '' : 'var(--err)';
+    $('mbar').classList.toggle('err', !ok);
+    $('mbarOk').classList.toggle('hidden', !ok);
+    $('mbarErr').classList.toggle('hidden', ok);
+  }
+
+  function markInvalid(ids) {
+    INPUTS.forEach(id => $(id).classList.toggle('invalid', ids.includes(id)));
+  }
+
+  function showError(msg, hint, fields = []) {
+    $('results').classList.add('hidden');
+    $('errorBox').classList.remove('hidden');
+    $('errorText').textContent = msg;
+    $('errorHint').textContent = hint || '';
+    $('errorHint').classList.toggle('hidden', !hint);
+    markInvalid(fields);
+    setStatus(false);
+  }
+
+  function hideError() {
+    $('errorBox').classList.add('hidden');
+    $('results').classList.remove('hidden');
+    markInvalid([]);
+    setStatus(true);
+  }
+
+  function syncChips() {
+    document.querySelectorAll('[data-group]').forEach(g => {
+      const key = g.dataset.group;
+      g.querySelectorAll('.chip').forEach(c => {
+        const on = Number(c.dataset.value) === state[key];
+        c.classList.toggle('active', on);
+        c.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      $(key + 'Title').textContent = `> ${label(state[key])}`;
+      $(key + 'Hint').textContent = hints[key][String(state[key])] || '';
+    });
+  }
+
+  function drawScale(V) {
+    const ticks = $('ticks'), scale = $('scale'), cyl = $('cyl');
+    ticks.innerHTML = '';
+    scale.innerHTML = '';
+    const H = cyl.clientHeight;                          // vnitřní výška válce v px
+    const border = cyl.offsetHeight - cyl.clientHeight;  // spodní okraj válce
+    scale.style.height = ($('cylLip').offsetHeight + cyl.offsetHeight) + 'px';
+    if (!H) return;
+
+    const STEP = 10;                                     // ryska každých 10 ml
+    const count = Math.floor(V / STEP + EPS);
+    // U velkých lahví popisuj jen každou n-tou rysku, aby se čísla nepřekrývala (min. ~22 px mezi popisky)
+    const labelEvery = Math.max(1, Math.ceil((22 * count) / H));
+
+    for (let i = 0; i <= count; i++) {
+      const ml = i * STEP;
+      const pos = ml / V * 100;
+      const labeled = i % labelEvery === 0;
+      if (i > 0) {
+        const t = document.createElement('div');
+        t.className = 'tick';
+        t.style.bottom = pos + '%';
+        t.style.width = labeled ? '22px' : '12px';
+        ticks.appendChild(t);
+      }
+      if (labeled) {
+        const l = document.createElement('div');
+        l.className = 'tick-label';
+        l.style.bottom = (border + pos / 100 * H) + 'px';
+        l.textContent = ml;
+        scale.appendChild(l);
+      }
+    }
+  }
+
+  // Nápověda: maximální objem příchutě, který se při daném nastavení ještě vejde
+  function maxAromaHint(V, vgT, pgT, B, va, vb) {
+    const vgLeft = vgT - B * vb;
+    const pgLeft = pgT - B * (1 - vb);
+    if (vgLeft < -EPS || pgLeft < -EPS || B > V + EPS) {
+      return '> Problém způsobuje už samotný booster: i bez příchutě přinese víc PG nebo VG, než cílový poměr dovolí. Zvol jiný poměr boosteru, silnější booster (menší objem) nebo nižší cílovou sílu nikotinu.';
+    }
+    const limits = [V - B];
+    if (va > 0) limits.push(vgLeft / va);
+    if (va < 1) limits.push(pgLeft / (1 - va));
+    const maxA = Math.max(0, Math.floor(Math.min(...limits) + EPS));
+    return `> S tímto boosterem a poměrem se vejde nejvýše ${maxA} ml této příchutě. Případně změň cílový poměr VG/PG nebo použij příchuť s jiným poměrem.`;
+  }
+
+  // ---------- Výpočet ----------
+  function calc() {
+    const V   = num('volume');
+    const vgP = state.ratio;          // % VG v cílovém liquidu
+    const A   = num('aromaVol');
+    const va  = state.aroma / 100;    // podíl VG v příchuti
+    const n   = num('nicTarget');
+    const b   = num('nicBase');
+    const vb  = state.nic / 100;      // podíl VG v boosteru
+
+    $('aromaPct').textContent = (V > 0 && A >= 0) ? `= ${fmt1(A / V * 100)} % objemu lahvičky` : '';
+
+    // --- Validace vstupů ---
+    if (!(V > 0))  return showError('Objem lahvičky musí být číslo větší než 0 ml.', '', ['volume']);
+    if (!(A >= 0)) return showError('Objem příchutě musí být číslo 0 ml nebo více.', '', ['aromaVol']);
+    if (!(n >= 0)) return showError('Cílová síla nikotinu musí být číslo 0 mg/ml nebo více.', '', ['nicTarget']);
+    if (n > 0 && !(b > 0)) return showError('Síla boosteru musí být číslo větší než 0 mg/ml.', '', ['nicBase']);
+    if (n > 0 && n > b)
+      return showError(`Cílová síla ${n} mg/ml je vyšší než síla boosteru ${b} mg/ml. Ředěním nelze sílu nikotinu zvýšit.`,
+        '> Sniž cílovou sílu nebo použij silnější booster.', ['nicTarget', 'nicBase']);
+
+    // --- Výpočet ---
+    const B = n > 0 ? V * n / b : 0;
+    const vgTarget = V * vgP / 100;
+    const pgTarget = V - vgTarget;
+
+    const aroVG = A * va,  aroPG = A * (1 - va);
+    const nicVG = B * vb,  nicPG = B * (1 - vb);
+
+    let fillVG = vgTarget - aroVG - nicVG;
+    let fillPG = pgTarget - aroPG - nicPG;
+
+    const lbl = labelShort(vgP);
+
+    // --- Fyzikální blokáda ---
+    if (A + B > V + EPS) {
+      return showError(
+        `Příchuť (${r(A)} ml) a booster (${r(B)} ml) mají dohromady ${r(A + B)} ml, ale lahvička má jen ${r(V)} ml. Do lahvičky se to fyzikálně nevejde.`,
+        maxAromaHint(V, vgTarget, pgTarget, B, va, vb), ['aromaVol']
+      );
+    }
+    if (fillVG < -EPS) {
+      return showError(
+        `Ve ${r(V)} ml liquidu v poměru ${lbl} smí být nejvýše ${r(vgTarget)} ml VG, ale příchuť a booster samy přinášejí ${r(aroVG + nicVG)} ml VG. V tomto poměru se tato kombinace do lahvičky fyzikálně nevejde.`,
+        maxAromaHint(V, vgTarget, pgTarget, B, va, vb)
+      );
+    }
+    if (fillPG < -EPS) {
+      return showError(
+        `Ve ${r(V)} ml liquidu v poměru ${lbl} smí být nejvýše ${r(pgTarget)} ml PG, ale příchuť a booster samy přinášejí ${r(aroPG + nicPG)} ml PG. V tomto poměru se tato kombinace do lahvičky fyzikálně nevejde.`,
+        maxAromaHint(V, vgTarget, pgTarget, B, va, vb)
+      );
+    }
+
+    fillVG = Math.max(0, fillVG);
+    fillPG = Math.max(0, fillPG);
+    hideError();
+
+    // --- Výstup ---
+    const rVG = r(fillVG), rPG = r(fillPG), rAro = r(A), rNic = r(B);
+    $('rAro').textContent = rAro;
+    $('rNic').textContent = rNic;
+    $('rNicKs').textContent = fmt1(B / 10);
+    $('rVG').textContent = rVG;
+    $('rPG').textContent = rPG;
+    $('resSummary').textContent = `${r(V)} ML · ${lbl} · ${String(n).replace('.', ',')} MG`;
+
+    $('mAro').textContent = rAro;
+    $('mNic').textContent = rNic;
+    $('mVG').textContent = rVG;
+    $('mPG').textContent = rPG;
+
+    $('bAroVG').textContent = r(aroVG);  $('bAroPG').textContent = r(aroPG);
+    $('bNicVG').textContent = r(nicVG);  $('bNicPG').textContent = r(nicPG);
+    $('bFillVG').textContent = rVG;      $('bFillPG').textContent = rPG;
+    $('bTotVG').textContent = r(vgTarget); $('bTotPG').textContent = r(pgTarget);
+
+    // Odměrný válec odspodu: příchuť, booster, VG, PG
+    const pct = v => (v / V * 100) + '%';
+    $('segAro').style.height = pct(A);
+    $('segNic').style.height = pct(B);
+    $('segVG').style.height  = pct(fillVG);
+    $('segPG').style.height  = pct(fillPG);
+    drawScale(V);
+
+    const sum = rAro + rNic + rVG + rPG;
+    const diff = sum - r(V);
+    $('checkLine').textContent = diff === 0
+      ? `// CHECKSUM OK: ${sum} ml = objem lahvičky`
+      : `// CHECKSUM: ${sum} ml (odchylka ${diff > 0 ? '+' : ''}${diff} ml vlivem zaokrouhlení na celé ml)`;
+  }
+
+  function update() { calc(); save(); }
+
+  // ---------- Události ----------
+  document.querySelectorAll('[data-group]').forEach(g => {
+    g.addEventListener('click', e => {
+      const btn = e.target.closest('.chip');
+      if (!btn) return;
+      state[g.dataset.group] = Number(btn.dataset.value);
+      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+      syncChips();
+      update();
+    });
+  });
+
+  INPUTS.forEach(id => {
+    const el = $(id);
+    el.addEventListener('input', update);
+    // Ťuknutím se označí celá hodnota, aby šla rovnou přepsat
+    el.addEventListener('focus', () => setTimeout(() => { try { el.select(); } catch (_) {} }, 0));
+    // Tlačítko "Hotovo" / Enter na klávesnici zavře klávesnici
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); });
+  });
+
+  // Spodní lišta: klepnutím skočí na recept, schová se, když je recept vidět
+  $('mbar').addEventListener('click', () => $('output').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(entries => {
+      entries.forEach(en => $('mbar').classList.toggle('off', en.isIntersecting));
+    }, { threshold: 0.15 });
+    io.observe($('output'));
+  }
+
+  // Překreslení stupnice při otočení displeje / změně velikosti
+  let rt;
+  window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(calc, 150); });
+
+  // ---------- PWA: instalace a service worker ----------
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    $('installBtn').classList.remove('hidden');
+  });
+  $('installBtn').addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    try { await deferredPrompt.userChoice; } catch (_) {}
+    deferredPrompt = null;
+    $('installBtn').classList.add('hidden');
+  });
+  window.addEventListener('appinstalled', () => $('installBtn').classList.add('hidden'));
+
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+
+  load();
+  syncChips();
+  calc();
+})();
+</script>
+</body>
+</html>
